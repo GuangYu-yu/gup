@@ -75,7 +75,7 @@ jobs:
           cp LICENSE artifacts/ || echo "未找到 LICENSE 文件"
 
       - name: 上传构建产物
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: gup-${{ matrix.name }}
           path: artifacts/
@@ -87,7 +87,7 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/')
     steps:
       - name: 下载所有构建产物
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@v4
 
       - name: 创建发布版本
         id: create_release
