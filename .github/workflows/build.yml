@@ -1,105 +1,136 @@
-name: 构建与发布
+name: 构建 gup
 
 on:
   push:
     tags:
       - 'v*'
-  workflow_dispatch:
+  workflow_dispatch:   # 允许手动触发
 
 jobs:
   build:
-    name: 构建 ${{ matrix.target }}
-    runs-on: ${{ matrix.os }}
-    strategy:
-      matrix:
-        include:
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-            suffix: .exe
-            name: windows-x86_64
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-            suffix: ""
-            name: linux-x86_64
-          - os: macos-latest
-            target: x86_64-apple-darwin
-            suffix: ""
-            name: macos-x86_64
-          - os: macos-latest
-            target: aarch64-apple-darwin
-            suffix: ""
-            name: macos-aarch64
+    name: 构建
+    runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - name: 检出代码
+        uses: actions/checkout@v4
 
-      - name: 配置 Rust 环境
-        uses: actions-rs/toolchain@v1
+      - name: 删除旧版本
+        uses: actions/github-script@v7
         with:
-          toolchain: stable
-          target: ${{ matrix.target }}
-          override: true
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const { owner, repo } = context.repo;
+            const releases = await github.rest.repos.listReleases({
+              owner,
+              repo
+            });
+            
+            for (const release of releases.data) {
+              await github.rest.repos.deleteRelease({
+                owner,
+                repo,
+                release_id: release.id
+              });
+              
+              if (release.tag_name) {
+                try {
+                  await github.rest.git.deleteRef({
+                    owner,
+                    repo,
+                    ref: `tags/${release.tag_name}`
+                  });
+                } catch (e) {
+                  console.log(`Failed to delete tag ${release.tag_name}: ${e}`);
+                }
+              }
+            }
 
-      - name: 构建项目
-        uses: actions-rs/cargo@v1
+      - name: 设置 Go 环境
+        uses: actions/setup-go@v5
         with:
-          command: build
-          args: --release --target ${{ matrix.target }}
+          go-version: '1.22.0'
 
-      - name: 安装 UPX (Windows)
-        if: matrix.os == 'windows-latest'
+      - name: 初始化 Go 模块
         run: |
-          choco install upx -y
+          go mod init gup
+          go mod tidy
 
-      - name: 安装 UPX (Ubuntu)
-        if: matrix.os == 'ubuntu-latest'
+      - name: 构建所有平台
         run: |
+          # 创建构建目录和存储目录
+          mkdir -p build
+          mkdir -p binaries
+
+          # 安装 UPX
           sudo apt-get update
           sudo apt-get install -y upx
 
-      - name: 安装 UPX (macOS)
-        if: matrix.os == 'macos-latest'
-        run: |
-          brew install upx
+          # 构建并压缩函数
+          build_and_compress() {
+            local OS=$1
+            local ARCH=$2
+            local SUFFIX=$3
+            local NAME="gup${SUFFIX}"
+            
+            env GOOS=$OS GOARCH=$ARCH go build -ldflags="-s -w" -o "$NAME" gup.go
+            upx --best "$NAME" || true
+            tar -czf "build/gup_${OS}_${ARCH}.tar.gz" "$NAME"
+            cp "$NAME" "binaries/gup_${OS}_${ARCH}${SUFFIX}"
+            rm "$NAME"
+          }
 
-      - name: 使用 UPX 压缩可执行文件
-        run: |
-          upx --best --lzma target/${{ matrix.target }}/release/gup${{ matrix.suffix }}
+          # Linux
+          build_and_compress linux amd64
+          build_and_compress linux 386
+          build_and_compress linux arm64
+          build_and_compress linux arm
 
-      - name: 准备构建产物
-        shell: bash
+          # Windows
+          build_and_compress windows amd64 .exe
+          build_and_compress windows 386 .exe
+
+          # macOS
+          build_and_compress darwin amd64
+          build_and_compress darwin arm64
+
+      - name: 生成 SHA256 校验和
         run: |
-          mkdir -p artifacts
-          cp target/${{ matrix.target }}/release/gup${{ matrix.suffix }} artifacts/gup-${{ matrix.name }}${{ matrix.suffix }}
-          cp README.md artifacts/ || echo "未找到 README.md 文件"
-          cp LICENSE artifacts/ || echo "未找到 LICENSE 文件"
+          cd build
+          sha256sum * > sha256sum.txt
+
+      - name: 提交并推送更改
+        if: success()
+        run: |
+          if [ -d "binaries" ]; then
+            git config --local user.email "action@github.com"
+            git config --local user.name "GitHub Action"
+            git remote set-url origin https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git
+            git pull origin main --no-rebase || git pull origin master --no-rebase
+            git add binaries/
+            current_time=$(date '+%Y/%m/%d %H:%M:%S')
+            if ! git diff --staged --quiet; then
+              git commit -m "更新二进制文件 ${current_time}"
+              git push
+            fi
+          fi
 
       - name: 上传构建产物
         uses: actions/upload-artifact@v4
         with:
-          name: gup-${{ matrix.name }}
-          path: artifacts/
-
-  release:
-    name: 创建发布版本
-    needs: build
-    runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/')
-    steps:
-      - name: 下载所有构建产物
-        uses: actions/download-artifact@v4
+          name: gup-构建产物
+          path: build/*
 
       - name: 创建发布版本
-        id: create_release
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2
+        if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/')
         with:
-          files: |
-            gup-windows-x86_64/gup-windows-x86_64.exe
-            gup-linux-x86_64/gup-linux-x86_64
-            gup-macos-x86_64/gup-macos-x86_64
-            gup-macos-aarch64/gup-macos-aarch64
+          tag_name: ${{ github.ref_name || format('v{0}', github.run_number) }}
+          name: GitHub 文件上传工具 ${{ github.ref_name || format('v{0}', github.run_number) }}
           draft: false
           prerelease: false
-          generate_release_notes: true
+          files: |
+            build/*.tar.gz
+            build/sha256sum.txt
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
