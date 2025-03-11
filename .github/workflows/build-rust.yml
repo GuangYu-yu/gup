@@ -70,7 +70,7 @@ jobs:
           # 创建构建目录和存储目录
           mkdir -p build
           mkdir -p binaries
-          cd github_uploader
+          cd gup
 
           # 构建并压缩函数
           build_and_compress() {
