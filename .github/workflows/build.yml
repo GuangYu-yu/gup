@@ -1,0 +1,105 @@
+name: 构建与发布
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: 构建 ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            suffix: .exe
+            name: windows-x86_64
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            suffix: ""
+            name: linux-x86_64
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            suffix: ""
+            name: macos-x86_64
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            suffix: ""
+            name: macos-aarch64
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 配置 Rust 环境
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          target: ${{ matrix.target }}
+          override: true
+
+      - name: 构建项目
+        uses: actions-rs/cargo@v1
+        with:
+          command: build
+          args: --release --target ${{ matrix.target }}
+
+      - name: 安装 UPX (Windows)
+        if: matrix.os == 'windows-latest'
+        run: |
+          choco install upx -y
+
+      - name: 安装 UPX (Ubuntu)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y upx
+
+      - name: 安装 UPX (macOS)
+        if: matrix.os == 'macos-latest'
+        run: |
+          brew install upx
+
+      - name: 使用 UPX 压缩可执行文件
+        run: |
+          upx --best --lzma target/${{ matrix.target }}/release/gup${{ matrix.suffix }}
+
+      - name: 准备构建产物
+        shell: bash
+        run: |
+          mkdir -p artifacts
+          cp target/${{ matrix.target }}/release/gup${{ matrix.suffix }} artifacts/gup-${{ matrix.name }}${{ matrix.suffix }}
+          cp README.md artifacts/ || echo "未找到 README.md 文件"
+          cp LICENSE artifacts/ || echo "未找到 LICENSE 文件"
+
+      - name: 上传构建产物
+        uses: actions/upload-artifact@v3
+        with:
+          name: gup-${{ matrix.name }}
+          path: artifacts/
+
+  release:
+    name: 创建发布版本
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    steps:
+      - name: 下载所有构建产物
+        uses: actions/download-artifact@v3
+
+      - name: 创建发布版本
+        id: create_release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            gup-windows-x86_64/gup-windows-x86_64.exe
+            gup-linux-x86_64/gup-linux-x86_64
+            gup-macos-x86_64/gup-macos-x86_64
+            gup-macos-aarch64/gup-macos-aarch64
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
