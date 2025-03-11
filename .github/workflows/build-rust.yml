@@ -72,25 +72,36 @@ jobs:
           mkdir -p binaries
           cd gup
 
+          # 查找实际的可执行文件名称
+          BINARY_NAME=$(grep -m 1 "name" Cargo.toml | cut -d '"' -f 2 || echo "gup")
+          echo "二进制文件名称: $BINARY_NAME"
+
           # 构建并压缩函数
           build_and_compress() {
             local TARGET=$1
             local OS=$2
             local ARCH=$3
             local SUFFIX=$4
-            local NAME="gup${SUFFIX}"
+            local NAME="${BINARY_NAME}${SUFFIX}"
             
             echo "构建 $TARGET..."
             cargo build --release --target $TARGET
             
-            cp "target/$TARGET/release/gup${SUFFIX}" "../$NAME"
-            cd ..
-            
-            upx --best "$NAME" || true
-            tar -czf "build/gup_${OS}_${ARCH}.tar.gz" "$NAME"
-            cp "$NAME" "binaries/gup_${OS}_${ARCH}${SUFFIX}"
-            rm "$NAME"
-            cd github_uploader
+            if [ -f "target/$TARGET/release/$BINARY_NAME$SUFFIX" ]; then
+              cp "target/$TARGET/release/$BINARY_NAME$SUFFIX" "../$NAME"
+              cd ..
+              
+              upx --best "$NAME" || true
+              tar -czf "build/${BINARY_NAME}_${OS}_${ARCH}.tar.gz" "$NAME"
+              cp "$NAME" "binaries/${BINARY_NAME}_${OS}_${ARCH}${SUFFIX}"
+              rm "$NAME"
+              cd gup
+            else
+              echo "警告: 找不到编译后的二进制文件 target/$TARGET/release/$BINARY_NAME$SUFFIX"
+              ls -la "target/$TARGET/release/"
+              cd ..
+              cd gup
+            fi
           }
 
           # Linux
